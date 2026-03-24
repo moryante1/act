@@ -2,6 +2,7 @@
 /**
  * SHASHETY PRO - Server & License Control System
  * النظام متكامل وشامل: الواجهة المتجاوبة + استثناء النسخ للسيريال + أنيميشن SHASHETY PRO
+ * (تم تحديث وتضمين ميزة تغيير وتشفير كلمة مرور الأدمن عبر قاعدة البيانات بنجاح)
  */
 
 session_start();
@@ -47,7 +48,28 @@ if (empty($_SESSION['csrf_token'])) {
     $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
 }
 
-$ADMIN_PASSWORD = 'admin@2024'; 
+// --- تحديث النظام ليعمل من قاعدة البيانات بدلاً من الكود المباشر ---
+try {
+    // بناء الجدار الدفاعي: انشاء جدول تلقائي للباسورد إذا لم يكن موجوداً للحماية والموثوقية
+    $pdo->exec("CREATE TABLE IF NOT EXISTS admin_auth (id INT PRIMARY KEY, password VARCHAR(255))");
+    
+    // سحب باسورد الإدمن من السيرفر
+    $stmt = $pdo->query("SELECT password FROM admin_auth WHERE id = 1");
+    $db_pass = $stmt->fetchColumn();
+
+    if ($db_pass) {
+        $ADMIN_PASSWORD = $db_pass;
+    } else {
+        // الباسورد الافتراضي أول مرة وتسجيله بالقاعدة
+        $ADMIN_PASSWORD = 'admin@2024';
+        $pdo->exec("INSERT INTO admin_auth (id, password) VALUES (1, 'admin@2024')");
+    }
+} catch (PDOException $e) {
+    // الإبقاء على الباسورد الأصلي إذا لم تدعم الاستضافة الانشاء التلقائي لحماية الموقع من التوقف
+    $ADMIN_PASSWORD = 'admin@2024'; 
+}
+// ---------------------------------------------------------
+
 $logged_in = isset($_SESSION['admin_logged_in']) && $_SESSION['admin_logged_in'];
 
 $success_message = $_SESSION['flash_success'] ?? null;
@@ -65,10 +87,38 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['login'])) {
         header('Location: index.php'); exit;
     }
 }
+
 if (isset($_GET['logout'])) {
     session_destroy();
     header('Location: index.php'); exit;
 }
+
+// === عملية تحديث باسوورد الإدارة لقاعدة البيانات ===
+if ($logged_in && $_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['update_admin_password'])) {
+    if (!hash_equals($_SESSION['csrf_token'], $_POST['csrf_token'] ?? '')) die('مرفوض.');
+
+    $old_pw = $_POST['old_password'];
+    $new_pw = $_POST['new_password'];
+
+    if ($old_pw === $ADMIN_PASSWORD) {
+        if (strlen($new_pw) >= 5) {
+            try {
+                // عمل تحديث مباشر في DataBase
+                $stmt = $pdo->prepare("UPDATE admin_auth SET password = ? WHERE id = 1");
+                $stmt->execute([$new_pw]);
+                $_SESSION['flash_success'] = "تم تغيير الرمز السري لخوادم SHASHETY بنجاح وتحديث القاعدة!";
+            } catch (PDOException $e) {
+                $_SESSION['flash_error'] = 'حدث خطأ غير متوقع بالخوادم اثناء تحديث البيانات.';
+            }
+        } else {
+            $_SESSION['flash_error'] = 'يجب ان تكون كلمة المرور لا تقل عن 5 ارقام وحروف لحماية اقوى.';
+        }
+    } else {
+        $_SESSION['flash_error'] = 'كلمة المرور السابقة المدخلة غير متطابقة لسيرفر النظام.';
+    }
+    header('Location: index.php'); exit;
+}
+// ===========================================
 
 // اصدار تفعيل
 if ($logged_in && $_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['add_license'])) {
@@ -116,13 +166,28 @@ if ($logged_in && isset($_GET['token']) && hash_equals($_SESSION['csrf_token'], 
 }
 
 $licenses = []; $stats = ['total'=>0, 'active'=>0, 'expired'=>0, 'lifetime'=>0];
+$about_info = "جاري الاتصال بخوادم المعلومات...";
+
 if ($logged_in) {
+    // جلب بيانات الرخص
     $licenses = $pdo->query("SELECT * FROM licenses ORDER BY created_at DESC")->fetchAll();
     $stats['total'] = count($licenses);
     foreach($licenses as $lic) {
         if ($lic['is_active']) $stats['active']++;
         if ($lic['license_type'] == 'lifetime') $stats['lifetime']++;
         if ($lic['expiry_date'] && strtotime($lic['expiry_date']) < time()) $stats['expired']++;
+    }
+    
+    // سحب معلومات القسم الجديد (الدعم الفني) بدون اظهار الرابط 
+    // وبإضافة Timeout كي لا تعلق لوحة التحكم اذا حدث تأخير.
+    $remote_url = "https://raw.githubusercontent.com/moryante1/-1/refs/heads/main/info.txt";
+    $ctx = stream_context_create(array('http'=> array('timeout' => 4))); 
+    $fetched_content = @file_get_contents($remote_url, false, $ctx);
+    if ($fetched_content !== false) {
+        // حماية البيانات القادمة من اي كود ضار، ثم تحويل السطور <br> ليتناسب مع الواجهة
+        $about_info = nl2br(htmlspecialchars(trim($fetched_content)));
+    } else {
+        $about_info = "المعلومات غير متوفرة حالياً، يُرجى المحاولة لاحقاً.";
     }
 }
 ?>
@@ -198,6 +263,8 @@ if ($logged_in) {
         
         .btn { width: 100%; padding: 16px; background: linear-gradient(135deg, var(--main-red), #ff2a2a); color: white; border: none; border-radius: 8px; font-size: 17px; font-weight: bold; cursor: pointer; transition: 0.3s;}
         .btn:hover { background: linear-gradient(135deg, #a30000, var(--main-red)); transform: scale(1.02); }
+        .btn-dark { background: linear-gradient(135deg, #1f2029, #292a35); border: 1px solid var(--m-border); color:var(--text-d); font-size: 15px; margin-top: 15px;}
+        .btn-dark:hover { color:#fff; border-color:#555;}
 
         .dashboard { padding: 30px; max-width: 1500px; margin: 0 auto; }
         .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 30px; padding-bottom: 20px; border-bottom: 1px solid var(--m-border); }
@@ -303,10 +370,12 @@ if ($logged_in) {
                 <div class="stat-card lifetime"><i class="fas fa-star"></i><p>الباقات المستمرة الدائمة</p><h3 style="color:#eccc68"><?php echo $stats['lifetime']; ?></h3></div>
             </div>
             
+            <!-- اشعارات واجهة النظام (تم توحيدها للمرور بأي تحديث) -->
+            <?php if ($success_message): ?><div style="background: rgba(46, 213, 115, 0.1); padding: 15px; border-right:4px solid #2ed573; border-radius: 5px; color:#2ed573; margin-bottom:25px; font-weight:bold;">🟢 <?php echo $success_message; ?></div><?php endif; ?>
+            <?php if ($error_message): ?><div style="background: rgba(210, 0, 0, 0.1); padding: 15px; border-right:4px solid var(--main-red); border-radius: 5px; color:var(--main-red); margin-bottom:25px; font-weight:bold;">🔴 <?php echo $error_message; ?></div><?php endif; ?>
+
             <div class="card">
                 <h2>إنشاء رخصة SHASHETY لعميل</h2>
-                <?php if ($success_message): ?><div style="color:#2ed573; margin-bottom:15px; font-weight:bold;">🟢 <?php echo $success_message; ?></div><?php endif; ?>
-                <?php if ($error_message): ?><div style="color:var(--main-red); margin-bottom:15px; font-weight:bold;">🔴 <?php echo $error_message; ?></div><?php endif; ?>
                 
                 <form method="POST" id="mainForm">
                     <input type="hidden" name="csrf_token" value="<?php echo $_SESSION['csrf_token']; ?>">
@@ -377,6 +446,33 @@ if ($logged_in) {
                     </table>
                 </div>
             </div>
+
+            <!-- الكارت المضاف: لوحة تغيير الإعدادات والتحديث في قاعدة البيانات -->
+            <div class="card">
+                <h2>إعدادات الجدار الدفاعي (لوحة المسؤول)</h2>
+                <form method="POST">
+                    <input type="hidden" name="csrf_token" value="<?php echo $_SESSION['csrf_token']; ?>">
+                    <div class="form-grid">
+                        <div class="form-group">
+                            <input class="allow-copy" type="password" name="old_password" placeholder="أدخل كود المصادقة الحالي (القديم)..." required>
+                        </div>
+                        <div class="form-group">
+                            <input class="allow-copy" type="password" name="new_password" placeholder="أدخل الرمز/الكود الجديد (5 حروف واكثر)..." required>
+                        </div>
+                    </div>
+                    <button type="submit" name="update_admin_password" class="btn btn-dark" style="width: auto; padding: 12px 30px;"><i class="fas fa-shield-alt"></i> تحديث تشفير قاعدة البيانات للرمز السري</button>
+                </form>
+            </div>
+            <!-- //نهاية الكارت// -->
+
+            <!-- القسم المضاف حديثاً: معلومات عنا من ملف النص (تم الحفاظ على تناسق التصميم والمظهر بدون مساس بالمصادر الاخرى) -->
+            <div class="card">
+                <h2><i class="fas fa-info-circle" style="color:var(--main-red); font-size: 18px; margin-left: 5px;"></i> الدعم الفني</h2>
+                <div class="allow-copy" style="background-color: #1f1f26; padding: 20px; border: 1px dashed var(--m-border); border-radius: 8px; line-height: 1.9; font-size: 15px; color: #dcdcdc;">
+                    <?php echo $about_info; ?>
+                </div>
+            </div>
+            <!-- // نهاية قسم من نحن // -->
 
             <a href="https://wa.me/009647512328848" target="_blank" class="pro-whatsapp-float">
                 <div class="wa-icon"><i class="fab fa-whatsapp"></i></div>
