@@ -459,7 +459,7 @@ if ($logged_in && $_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['add_lice
         ");
         if ($stmt->execute([$machine_id, $customer_name, $phone, $email, $domain, $license_key, $license_type, $expiry_date, null, $notes])) {
             sendToTelegram($_POST, $license_key, $expiry_date);
-            $_SESSION['flash_success'] = "تم توليد وتوثيق التفعيل للعميل بنجاح! المفتاح: " . $license_key;
+            $_SESSION['flash_success'] = "تم توليد وتوثيق التفعيل للعميل بنجاح! تم إرسال المفتاح إلى الإدارة عبر تيليجرام.";
             header('Location: index.php'); exit;
         }
     } catch(PDOException $e) {
